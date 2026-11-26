@@ -6,9 +6,12 @@ var connectionString = builder.Configuration.GetConnectionString("Retail")
 
 builder.Services.AddSingleton(new RetailStore(connectionString));
 builder.Services.AddProblemDetails();
+builder.Services.AddSingleton(new ModelEditorAccess(builder.Configuration));
+builder.Services.AddSingleton(new ProductModelEditor(connectionString));
 
 var app = builder.Build();
 app.UseExceptionHandler();
+app.UseRouting();
 app.Use(async (context, next) =>
 {
     try
@@ -20,6 +23,8 @@ app.Use(async (context, next) =>
         await Results.Problem(statusCode: exception.StatusCode, detail: exception.Message).ExecuteAsync(context);
     }
 });
+
+app.Use(ModelEditorEndpoints.AuthorizeModelEditorRequest);
 
 app.MapGet("/api/products", async (RetailStore store, CancellationToken cancellationToken) =>
     Results.Ok(await store.ListProductsAsync(cancellationToken)));
@@ -38,5 +43,7 @@ app.MapPost("/api/sales", async (StockRequest request, RetailStore store, Cancel
 
 app.MapPost("/api/sales/{id:guid}/returns", async (Guid id, ReturnRequest request, RetailStore store, CancellationToken cancellationToken) =>
     Results.Content(await store.ReturnAsync(id, request, cancellationToken), "application/json", statusCode: 201));
+
+app.MapModelEditor();
 
 app.Run();

@@ -4,7 +4,7 @@
 
 <PageTitle>Մանրածախ առևտրի կառավարում</PageTitle>
 
-<header><div class="wrap"><h1>Խանութի կառավարում</h1><p>Ապրանքներ, մուտքեր և վաճառքներ</p></div></header>
+<header><div class="wrap"><h1>Խանութի կառավարում</h1><p>Ապրանքներ, մուտքեր և վաճառքներ</p><nav><a href="model-editor">Մոդելների և ձևերի խմբագրիչ</a></nav></div></header>
 <main class="wrap">
     @if (error is not null)
     {
@@ -36,7 +36,7 @@
                     <tbody>
                         @foreach (var product in products)
                         {
-                            <tr><td>@product.Sku</td><td>@product.Name</td><td>@product.UnitPriceAmd</td><td>@product.Stock.ToString("0.###")</td></tr>
+                            <tr><td>@product.Sku</td><td><a href="@($"model-editor?productId={product.Id}")">@product.Name</a></td><td>@product.UnitPriceAmd</td><td>@product.Stock.ToString("0.###")</td></tr>
                         }
                     </tbody>
                 </table>

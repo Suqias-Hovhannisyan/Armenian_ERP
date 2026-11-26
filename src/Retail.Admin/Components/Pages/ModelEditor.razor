@@ -1,0 +1,459 @@
+@page "/model-editor"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inject IHttpClientFactory ClientFactory
+
+<PageTitle>Մոդելների և ձևերի խմբագրիչ</PageTitle>
+
+<header>
+    <div class="wrap">
+        <h1>Մոդելների և ձևերի խմբագրիչ</h1>
+        <nav><a href="/">Վերադառնալ ապրանքացանկին</a></nav>
+    </div>
+</header>
+
+<main class="wrap editor">
+    @if (error is not null)
+    {
+        <p class="notice error" role="alert">@error</p>
+    }
+    @if (message is not null)
+    {
+        <p class="notice success" role="status">@message</p>
+    }
+
+    @if (editor is null)
+    {
+        <section class="card">
+            <h2>Մուտք խմբագրիչ</h2>
+            <form @onsubmit="ConnectAsync" @onsubmit:preventDefault>
+                <label for="access-token">Մուտքի բանալի</label>
+                <input id="access-token" type="password" autocomplete="off" @bind="enteredToken" required disabled="@busy" />
+                <button disabled="@busy">Միանալ</button>
+            </form>
+        </section>
+    }
+    else
+    {
+        <section class="card">
+            <div class="heading">
+                <h2>Ապրանքի մոդել</h2>
+                <div class="editor-actions">
+                    <button type="button" class="secondary" @onclick="RefreshAsync" disabled="@busy">Թարմացնել</button>
+                    <button type="button" class="secondary" @onclick="Disconnect" disabled="@busy">Դուրս գալ</button>
+                </div>
+            </div>
+            @if (editor.CanGrant)
+            {
+                <button type="button" class="secondary" @onclick="ToggleManagerEditorAsync" disabled="@busy">
+                    @(editor.ManagerCanEdit ? "Հեռացնել մենեջերի խմբագրման իրավունքը" : "Թույլատրել մենեջերին խմբագրել մոդելն ու ձևը")
+                </button>
+            }
+
+            @if (editor.CanEdit)
+            {
+                <form class="editor-create" @onsubmit="CreateFieldAsync" @onsubmit:preventDefault>
+                    <div>
+                        <label for="field-key">Դաշտի կոդ</label>
+                        <input id="field-key" @bind="fieldKey" pattern="[a-z][a-z0-9_]{0,63}" maxlength="64" placeholder="shelf_code" required disabled="@busy" />
+                    </div>
+                    <div>
+                        <label for="field-label">Ցուցադրվող անուն</label>
+                        <input id="field-label" @bind="fieldLabel" maxlength="200" required disabled="@busy" />
+                    </div>
+                    <div>
+                        <label for="field-type">Տեսակ</label>
+                        <select id="field-type" @bind="fieldType" disabled="@busy">
+                            <option value="text">Տեքստ</option>
+                            <option value="integer">Ամբողջ թիվ</option>
+                            <option value="boolean">Այո կամ ոչ</option>
+                        </select>
+                    </div>
+                    <button disabled="@busy">Ստեղծել դաշտը</button>
+                </form>
+            }
+
+            @if (editor.Fields.Length == 0)
+            {
+                <p>Այս մոդելի համար հասանելի լրացուցիչ դաշտեր չկան։</p>
+            }
+            else
+            {
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th scope="col">Դաշտ</th>
+                                <th scope="col">Տեսակ</th>
+                                <th scope="col">Դիրքը ձևում</th>
+                                @if (editor.CanGrant)
+                                {
+                                    <th scope="col">Մենեջերի հասանելիություն</th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var field in editor.Fields)
+                            {
+                                <tr @key="field.Key">
+                                    <th scope="row">@field.Label<small class="field-key">@field.Key</small></th>
+                                    <td>@TypeLabel(field.Type)</td>
+                                    <td>
+                                        @if (editor.CanEdit)
+                                        {
+                                            <form class="inline-form" @onsubmit="() => PlaceFieldAsync(field.Key)" @onsubmit:preventDefault>
+                                                <label class="visually-hidden" for="@($"position-{field.Key}")">@field.Label դաշտի դիրք</label>
+                                                <input id="@($"position-{field.Key}")" type="number" min="0" max="10000" @bind="positions[field.Key]" required disabled="@busy" />
+                                                <button disabled="@busy">Տեղադրել</button>
+                                                @if (field.Placed)
+                                                {
+                                                    <button type="button" class="secondary" @onclick="() => SetPlacementAsync(field.Key, null)" disabled="@busy">Հեռացնել</button>
+                                                }
+                                            </form>
+                                            @if (!field.Placed)
+                                            {
+                                                <small>Ձևում տեղադրված չէ</small>
+                                            }
+                                        }
+                                        else
+                                        {
+                                            @(field.Placed ? field.Position.ToString() : "Ձևում տեղադրված չէ")
+                                        }
+                                    </td>
+                                    @if (editor.CanGrant)
+                                    {
+                                        <td>
+                                            <button type="button" class="secondary" @onclick="() => ToggleFieldPermissionAsync(field)" disabled="@busy">
+                                                @(field.ManagerCanUse ? "Հեռացնել դիտման և լրացման իրավունքը" : "Թույլատրել դիտել և լրացնել")
+                                            </button>
+                                        </td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+
+        <section class="card">
+            <h2>Ապրանքի ձև</h2>
+            <form>
+                <label for="editor-product">Ապրանք</label>
+                <select id="editor-product" value="@selectedProduct" @onchange="SelectProductAsync" disabled="@busy">
+                    <option value="">Ընտրիր ապրանքը</option>
+                    @foreach (var option in products)
+                    {
+                        <option value="@option.Id.ToString()">@option.Name (@option.Sku)</option>
+                    }
+                </select>
+            </form>
+            @if (loadedProduct is { } product)
+            {
+                <dl class="product-details">
+                    <div><dt>Կոդ</dt><dd>@product.Sku</dd></div>
+                    <div><dt>Անվանում</dt><dd>@product.Name</dd></div>
+                    <div><dt>Միավորի գին</dt><dd>@product.UnitPriceAmd ֏</dd></div>
+                    <div><dt>Մնացորդ</dt><dd>@product.Stock.ToString("0.###")</dd></div>
+                </dl>
+                @if (formFields.Length == 0)
+                {
+                    <p>Այս ձևում հասանելի լրացուցիչ դաշտեր չկան։</p>
+                }
+                @foreach (var field in formFields)
+                {
+                    <form class="field-value-form" @key="(product.Id, field.Key)" @onsubmit="() => SaveValueAsync(product.Id, field)" @onsubmit:preventDefault>
+                        <label for="@($"value-{field.Key}")">@field.Label</label>
+                        @if (field.Type == "boolean")
+                        {
+                            <select id="@($"value-{field.Key}")" @bind="values[field.Key]" disabled="@busy">
+                                <option value="">Չսահմանված</option>
+                                <option value="true">Այո</option>
+                                <option value="false">Ոչ</option>
+                            </select>
+                        }
+                        else
+                        {
+                            <input id="@($"value-{field.Key}")" inputmode="@(field.Type == "integer" ? "numeric" : "text")" maxlength="@(field.Type == "integer" ? 20 : 2000)" @bind="values[field.Key]" disabled="@busy" />
+                        }
+                        <button disabled="@busy">Պահպանել</button>
+                    </form>
+                }
+            }
+        </section>
+    }
+</main>
+
+@code {
+    [SupplyParameterFromQuery]
+    public Guid? ProductId { get; set; }
+
+    private EditorState? editor;
+    private Field[] formFields = [];
+    private Product[] products = [];
+    private readonly Dictionary<string, int> positions = new();
+    private readonly Dictionary<string, string> values = new();
+    private string enteredToken = "";
+    private string activeToken = "";
+    private string fieldKey = "";
+    private string fieldLabel = "";
+    private string fieldType = "text";
+    private string selectedProduct = "";
+    private Product? loadedProduct;
+    private bool busy;
+    private string? error;
+    private string? message;
+
+    private Task ConnectAsync() => RunAsync(async () =>
+    {
+        var token = enteredToken.Trim();
+        enteredToken = "";
+        if (token.Length == 0 || token.Any(char.IsWhiteSpace))
+        {
+            error = "Մուտքագրիր վավեր բանալի։";
+            return;
+        }
+
+        using var client = CreateClient(token);
+        var state = await client.GetFromJsonAsync<EditorState>("/api/model-editor/products")
+            ?? throw new System.Text.Json.JsonException("Editor state was empty.");
+        products = await client.GetFromJsonAsync<Product[]>("/api/products") ?? [];
+        activeToken = token;
+        ApplyEditorState(state);
+        if (ProductId is Guid id && products.Any(product => product.Id == id))
+        {
+            selectedProduct = id.ToString();
+            await LoadProductAsync(id);
+        }
+    });
+
+    private void Disconnect()
+    {
+        activeToken = "";
+        enteredToken = "";
+        editor = null;
+        selectedProduct = "";
+        products = [];
+        positions.Clear();
+        ResetProduct();
+        fieldKey = "";
+        fieldLabel = "";
+        fieldType = "text";
+        error = null;
+        message = null;
+    }
+
+    private HttpClient CreateClient(string token)
+    {
+        var client = ClientFactory.CreateClient("RetailApi");
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        return client;
+    }
+
+    private Task RefreshAsync() => RunAsync(async () =>
+    {
+        using var client = CreateClient(activeToken);
+        products = await client.GetFromJsonAsync<Product[]>("/api/products") ?? [];
+        await ReloadEditorAsync();
+    });
+
+    private async Task ReloadEditorAsync()
+    {
+        using var client = CreateClient(activeToken);
+        var state = await client.GetFromJsonAsync<EditorState>("/api/model-editor/products")
+            ?? throw new System.Text.Json.JsonException("Editor state was empty.");
+        ApplyEditorState(state);
+
+        if (Guid.TryParse(selectedProduct, out var id))
+        {
+            await LoadProductAsync(id);
+        }
+    }
+
+    private void ApplyEditorState(EditorState state)
+    {
+        editor = state;
+        positions.Clear();
+        foreach (var field in state.Fields)
+        {
+            positions.Add(field.Key, field.Position ?? 0);
+        }
+    }
+
+    private Task CreateFieldAsync() => RunAsync(async () =>
+    {
+        using var client = CreateClient(activeToken);
+        using var response = await client.PostAsJsonAsync("/api/model-editor/products/fields",
+            new { key = fieldKey.Trim(), label = fieldLabel.Trim(), type = fieldType });
+        response.EnsureSuccessStatusCode();
+
+        fieldKey = "";
+        fieldLabel = "";
+        message = "Դաշտը ստեղծվել է։";
+        await ReloadEditorAsync();
+    });
+
+    private Task PlaceFieldAsync(string key) => SetPlacementAsync(key, positions[key]);
+
+    private Task SetPlacementAsync(string key, int? position) => UpdateEditorAsync(
+        $"/api/model-editor/products/fields/{key}/placement", new { position },
+        position.HasValue ? "Դաշտի դիրքը պահպանվել է։" : "Դաշտը հեռացվել է ձևից։");
+
+    private Task ToggleManagerEditorAsync() => UpdateEditorAsync(
+        "/api/model-editor/products/permissions/manager",
+        new { canEdit = !editor!.ManagerCanEdit }, "Մենեջերի խմբագրման իրավունքը թարմացվել է։");
+
+    private Task ToggleFieldPermissionAsync(Field field) => UpdateEditorAsync(
+        $"/api/model-editor/products/fields/{field.Key}/permissions/manager",
+        new { canUse = !field.ManagerCanUse }, "Դաշտի հասանելիությունը թարմացվել է։");
+
+    private Task UpdateEditorAsync(string path, object body, string success) => RunAsync(async () =>
+    {
+        using var client = CreateClient(activeToken);
+        using var response = await client.PutAsJsonAsync(path, body);
+        response.EnsureSuccessStatusCode();
+        message = success;
+        await ReloadEditorAsync();
+    });
+
+    private Task SelectProductAsync(ChangeEventArgs args) => RunAsync(async () =>
+    {
+        selectedProduct = args.Value?.ToString() ?? "";
+        if (Guid.TryParse(selectedProduct, out var id))
+        {
+            await LoadProductAsync(id);
+        }
+        else
+        {
+            ResetProduct();
+        }
+    });
+
+    private async Task LoadProductAsync(Guid id)
+    {
+        ResetProduct();
+        var product = products.SingleOrDefault(item => item.Id == id);
+        if (product is null)
+        {
+            selectedProduct = "";
+            return;
+        }
+
+        using var client = CreateClient(activeToken);
+        var fields = await client.GetFromJsonAsync<Field[]>("/api/products/form") ?? [];
+        var storedValues = await client.GetFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>(
+            $"/api/products/{id}/custom-fields") ?? [];
+        foreach (var field in fields)
+        {
+            values.Add(field.Key, FormatValue(storedValues.GetValueOrDefault(field.Key)));
+        }
+
+        formFields = fields;
+        loadedProduct = product;
+    }
+
+    private void ResetProduct()
+    {
+        loadedProduct = null;
+        formFields = [];
+        values.Clear();
+    }
+
+    private Task SaveValueAsync(Guid id, Field field) => RunAsync(async () =>
+    {
+        var input = values[field.Key];
+        object? value = null;
+        if (input.Length > 0)
+        {
+            if (field.Type == "integer")
+            {
+                if (!long.TryParse(input, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out var number))
+                {
+                    error = "Մուտքագրիր վավեր ամբողջ թիվ։";
+                    return;
+                }
+                value = number;
+            }
+            else
+            {
+                value = field.Type == "boolean" ? input == "true" : input;
+            }
+        }
+
+        using var client = CreateClient(activeToken);
+        using var response = await client.PutAsJsonAsync($"/api/products/{id}/custom-fields/{field.Key}", new { value });
+        response.EnsureSuccessStatusCode();
+        values[field.Key] = value is null ? "" : FormatValue(System.Text.Json.JsonSerializer.SerializeToElement(value));
+        message = $"«{field.Label}» դաշտի արժեքը պահպանվել է։";
+    });
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (busy)
+        {
+            return;
+        }
+
+        busy = true;
+        error = null;
+        message = null;
+        try
+        {
+            await action();
+        }
+        catch (HttpRequestException ex)
+        {
+            if (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                Disconnect();
+            }
+
+            if (ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
+            {
+                ResetProduct();
+            }
+
+            error = ex.StatusCode switch
+            {
+                System.Net.HttpStatusCode.Unauthorized => "Մուտքի բանալին չի ընդունվել։",
+                System.Net.HttpStatusCode.Forbidden => "Այս գործողության իրավունքը չունես։",
+                System.Net.HttpStatusCode.BadRequest => "Ստուգիր մուտքագրված տվյալները։",
+                System.Net.HttpStatusCode.NotFound => "Դաշտը կամ ապրանքը չի գտնվել։",
+                System.Net.HttpStatusCode.Conflict => "Նույն կոդով դաշտն արդեն գոյություն ունի։",
+                _ => "Սերվերից հաստատում չի ստացվել։ Կրկին փորձիր։"
+            };
+        }
+        catch (TaskCanceledException)
+        {
+            error = "Սերվերը ժամանակին չպատասխանեց։ Կրկին փորձիր։";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            error = "Սերվերից ստացվել է անսպասելի պատասխան։";
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private static string FormatValue(System.Text.Json.JsonElement value) => value.ValueKind switch
+    {
+        System.Text.Json.JsonValueKind.String => value.GetString() ?? "",
+        System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False or System.Text.Json.JsonValueKind.Number
+            => value.GetRawText(),
+        _ => ""
+    };
+
+    private static string TypeLabel(string type) => type switch
+    {
+        "text" => "Տեքստ",
+        "integer" => "Ամբողջ թիվ",
+        "boolean" => "Այո կամ ոչ",
+        _ => type
+    };
+
+    private sealed record Product(Guid Id, string Sku, string Name, long UnitPriceAmd, decimal Stock);
+    private sealed record Field(string Key, string Label, string Type, int? Position, bool Placed, bool ManagerCanUse);
+    private sealed record EditorState(bool CanEdit, bool CanGrant, bool ManagerCanEdit, Field[] Fields);
+}
