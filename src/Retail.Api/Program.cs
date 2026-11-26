@@ -45,5 +45,6 @@ app.MapPost("/api/sales/{id:guid}/returns", async (Guid id, ReturnRequest reques
     Results.Content(await store.ReturnAsync(id, request, cancellationToken), "application/json", statusCode: 201));
 
 app.MapModelEditor();
+CatalogModels.MapEndpoints(app, connectionString);
 
 app.Run();
