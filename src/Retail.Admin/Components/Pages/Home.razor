@@ -1,0 +1,250 @@
+@page "/"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inject IHttpClientFactory ClientFactory
+
+<PageTitle>Մանրածախ առևտրի կառավարում</PageTitle>
+
+<header><div class="wrap"><h1>Խանութի կառավարում</h1><p>Ապրանքներ, մուտքեր և վաճառքներ</p></div></header>
+<main class="wrap">
+    @if (error is not null)
+    {
+        <p class="notice error" role="alert">@error</p>
+    }
+    @if (message is not null)
+    {
+        <p class="notice success" role="status">@message</p>
+    }
+
+    <section class="card">
+        <div class="heading">
+            <h2>Ապրանքացանկ</h2>
+            <button class="secondary" type="button" @onclick="RefreshAsync" disabled="@busy">Թարմացնել</button>
+        </div>
+        @if (products is null)
+        {
+            <p role="status">@(busy ? "Բեռնվում է…" : "Ապրանքացանկը հասանելի չէ։")</p>
+        }
+        else if (products.Length == 0)
+        {
+            <p>Ապրանքացանկը դատարկ է։ Ավելացրու առաջին ապրանքը ներքևի ձևով։</p>
+        }
+        else
+        {
+            <div class="table-scroll">
+                <table>
+                    <thead><tr><th scope="col">Կոդ</th><th scope="col">Ապրանք</th><th scope="col">Գին, ֏</th><th scope="col">Մնացորդ</th></tr></thead>
+                    <tbody>
+                        @foreach (var product in products)
+                        {
+                            <tr><td>@product.Sku</td><td>@product.Name</td><td>@product.UnitPriceAmd</td><td>@product.Stock.ToString("0.###")</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <div class="forms">
+        <section class="card">
+            <h2>Նոր ապրանք</h2>
+            <form @onsubmit="CreateProductAsync" @onsubmit:preventDefault>
+                <label for="sku">Ապրանքի կոդ</label>
+                <input id="sku" @bind="sku" required />
+                <label for="product-name">Անվանում</label>
+                <input id="product-name" @bind="productName" required />
+                <label for="price">Միավորի գին, ֏</label>
+                <input id="price" type="number" min="1" step="1" @bind="price" required />
+                <button disabled="@busy">Ավելացնել</button>
+            </form>
+        </section>
+        <section class="card">
+            <h2>Մուտք կամ վաճառք</h2>
+            <form @onsubmit="PostMovementAsync" @onsubmit:preventDefault>
+                <label for="movement">Գործողություն</label>
+                <select id="movement" @bind="movement">
+                    <option value="receipt">Ապրանքի մուտք</option>
+                    <option value="sale">Վաճառք</option>
+                </select>
+                <label for="product">Ապրանք</label>
+                <select id="product" @bind="selectedProduct" required>
+                    <option value="">Ընտրիր ապրանքը</option>
+                    @foreach (var product in products ?? [])
+                    {
+                        <option value="@product.Id">@product.Name (@product.Sku)</option>
+                    }
+                </select>
+                <label for="quantity">Քանակ</label>
+                <input id="quantity" type="number" step="0.001" min="0.001" @bind="quantity" required />
+                <button disabled="@(busy || products is not { Length: > 0 })">Գրանցել</button>
+            </form>
+        </section>
+        <section class="card">
+            <h2>Վերադարձ</h2>
+            <form @onsubmit="PostReturnAsync" @onsubmit:preventDefault>
+                <label for="sale-id">Վաճառքի ID</label>
+                <input id="sale-id" @bind="saleId" required />
+                <label for="return-quantity">Վերադարձի քանակ</label>
+                <input id="return-quantity" type="number" step="0.001" min="0.001" @bind="returnQuantity" required />
+                <button disabled="@busy">Գրանցել վերադարձը</button>
+            </form>
+        </section>
+    </div>
+</main>
+
+@code {
+    private Product[]? products;
+    private bool busy;
+    private string? message;
+    private string? error;
+    private string sku = "";
+    private string productName = "";
+    private long price = 1;
+    private string movement = "receipt";
+    private string selectedProduct = "";
+    private decimal quantity = 1;
+    private string saleId = "";
+    private decimal returnQuantity = 1;
+    private readonly Dictionary<object, Guid> pendingRequests = new();
+
+    protected override Task OnInitializedAsync() => RefreshAsync();
+
+    private Task RefreshAsync() => RunAsync(LoadProductsAsync);
+
+    private async Task LoadProductsAsync()
+    {
+        using var client = ClientFactory.CreateClient("RetailApi");
+        products = await client.GetFromJsonAsync<Product[]>("/api/products") ?? [];
+    }
+
+    private Task CreateProductAsync() => RunAsync(async () =>
+    {
+        var payload = new { sku = sku.Trim(), name = productName.Trim(), unitPriceAmd = price };
+        await PostAsync<Product>("/api/products", payload, requestId =>
+            new { requestId, payload.sku, payload.name, payload.unitPriceAmd });
+        sku = "";
+        productName = "";
+        price = 1;
+        message = "Ապրանքն ավելացվել է։";
+        await RefreshAfterPostingAsync();
+    });
+
+    private Task PostMovementAsync() => RunAsync(async () =>
+    {
+        if (!Guid.TryParse(selectedProduct, out var productId))
+        {
+            error = "Ընտրիր ապրանքը։";
+            return;
+        }
+
+        var isSale = movement == "sale";
+        var path = isSale ? "/api/sales" : "/api/receipts";
+        var payload = new { path, productId, quantity };
+        var result = await PostAsync<Operation>(path, payload, requestId =>
+            new { requestId, productId, payload.quantity });
+        if (isSale)
+        {
+            saleId = result.Id.ToString();
+            message = $"Վաճառքը գրանցվել է։ Գումարը՝ {result.TotalAmd} ֏։ ID՝ {result.Id}";
+        }
+        else
+        {
+            message = $"Մուտքը գրանցվել է։ Մնացորդը՝ {result.Stock:0.###}։";
+        }
+        await RefreshAfterPostingAsync();
+    });
+
+    private Task PostReturnAsync() => RunAsync(async () =>
+    {
+        if (!Guid.TryParse(saleId, out var id))
+        {
+            error = "Մուտքագրիր վաճառքի վավեր ID։";
+            return;
+        }
+
+        var payload = new { saleId = id, quantity = returnQuantity };
+        var result = await PostAsync<Operation>($"/api/sales/{id}/returns", payload, requestId =>
+            new { requestId, payload.quantity });
+        message = $"Վերադարձը գրանցվել է։ Գումարը՝ {result.TotalAmd} ֏։";
+        await RefreshAfterPostingAsync();
+    });
+
+    private async Task RefreshAfterPostingAsync()
+    {
+        try
+        {
+            await LoadProductsAsync();
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            error = "Գործողությունը գրանցվել է։ Ապրանքացանկը չթարմացվեց։ Սեղմիր «Թարմացնել»՝ նոր մնացորդը տեսնելու համար։";
+        }
+    }
+
+    private async Task<T> PostAsync<T>(string path, object payload, Func<Guid, object> createBody)
+    {
+        if (!pendingRequests.TryGetValue(payload, out var requestId))
+        {
+            requestId = Guid.NewGuid();
+            pendingRequests.Add(payload, requestId);
+        }
+
+        using var client = ClientFactory.CreateClient("RetailApi");
+        using var response = await client.PostAsJsonAsync(path, createBody(requestId));
+        if (!response.IsSuccessStatusCode)
+        {
+            if ((int)response.StatusCode is >= 400 and < 500)
+            {
+                pendingRequests.Remove(payload);
+            }
+            throw new HttpRequestException(null, null, response.StatusCode);
+        }
+        var result = await response.Content.ReadFromJsonAsync<T>();
+        if (result is null)
+        {
+            throw new HttpRequestException("The API returned an empty response.");
+        }
+
+        pendingRequests.Remove(payload);
+        return result;
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (busy)
+        {
+            return;
+        }
+        busy = true;
+        error = null;
+        message = null;
+        try
+        {
+            await action();
+        }
+        catch (HttpRequestException ex)
+        {
+            error = ex.StatusCode switch
+            {
+                System.Net.HttpStatusCode.BadRequest => "Ստուգիր մուտքագրված տվյալները։",
+                System.Net.HttpStatusCode.NotFound => "Ապրանքը կամ վաճառքը չի գտնվել։",
+                System.Net.HttpStatusCode.Conflict => "Գործողությունը չի կատարվել։ Ստուգիր մնացորդը կամ վերադարձի քանակը։",
+                _ => "Սերվերից հաստատում չի ստացվել։ Ստուգիր կապը և կրկին փորձիր։"
+            };
+        }
+        catch (TaskCanceledException)
+        {
+            error = "Սերվերը ժամանակին չպատասխանեց։ Կրկին փորձիր։";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            error = "Սերվերից ստացվել է անսպասելի պատասխան։";
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private sealed record Product(Guid Id, string Sku, string Name, decimal UnitPriceAmd, decimal Stock);
+    private sealed record Operation(Guid Id, Guid ProductId, decimal Quantity, decimal Stock, decimal? TotalAmd);
+}
