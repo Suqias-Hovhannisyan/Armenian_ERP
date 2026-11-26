@@ -5,10 +5,12 @@ using Microsoft.Data.SqlClient;
 
 namespace Retail.Api;
 
-internal sealed record ProductCustomField(string Key, string Label, string Type, int? Position, bool ManagerCanUse)
+internal sealed record ProductCustomField(string Key, string Label, string Type, int? Position, bool ManagerCanUse, string? TargetModelKey)
 {
     public bool Placed => Position.HasValue;
 }
+
+internal sealed record ProductFieldOption(Guid Id, string Name);
 
 internal sealed record ProductEditorState(bool CanEdit, bool CanGrant, bool ManagerCanEdit, IReadOnlyList<ProductCustomField> Fields);
 
@@ -54,17 +56,38 @@ internal sealed class ProductModelEditor(string connectionString)
                 throw RetailException.Invalid("Provide a field label of 1–200 characters.");
             }
 
-            if (type is not ("text" or "integer" or "boolean"))
+            if (type is not ("text" or "integer" or "boolean" or "reference"))
             {
-                throw RetailException.Invalid("Field type must be text, integer, or boolean.");
+                throw RetailException.Invalid("Field type must be text, integer, boolean or reference.");
+            }
+
+            if (type == "reference")
+            {
+                RequireAdmin(role);
+                if (request.TargetModelKey is not string target || !IsValidKey(target))
+                {
+                    throw RetailException.Invalid("Select a target model for this reference field.");
+                }
+
+                await using var lookup = new SqlCommand("SELECT 1 FROM dbo.CustomModels WHERE ModelKey = @target;", connection, transaction);
+                lookup.Parameters.Add("@target", SqlDbType.VarChar, 64).Value = target;
+                if (await lookup.ExecuteScalarAsync(token) is null)
+                {
+                    throw RetailException.Invalid("The selected target model does not exist.");
+                }
+            }
+            else if (request.TargetModelKey is not null)
+            {
+                throw RetailException.Invalid("Only reference fields accept a target model.");
             }
 
             await using var command = new SqlCommand("""
-                INSERT INTO dbo.ProductCustomFields(FieldKey, Label, FieldType)
-                SELECT @key, @label, @type
+                INSERT INTO dbo.ProductCustomFields(FieldKey, Label, FieldType, TargetModelKey)
+                SELECT @key, @label, @type, @target
                 WHERE NOT EXISTS (SELECT 1 FROM dbo.ProductCustomFields WHERE FieldKey = @key);
                 """, connection, transaction);
             AddKey(command, key);
+            command.Parameters.Add("@target", SqlDbType.VarChar, 64).Value = (object?)request.TargetModelKey ?? DBNull.Value;
             command.Parameters.Add("@label", SqlDbType.NVarChar, 200).Value = label;
             command.Parameters.Add("@type", SqlDbType.VarChar, 12).Value = type;
             if (await command.ExecuteNonQueryAsync(token) == 0)
@@ -72,7 +95,7 @@ internal sealed class ProductModelEditor(string connectionString)
                 throw RetailException.Conflict("This field key is already in use.");
             }
 
-            return new ProductCustomField(key, label, type, null, false);
+            return new ProductCustomField(key, label, type, null, false, request.TargetModelKey);
         }, token);
     }
 
@@ -154,10 +177,14 @@ internal sealed class ProductModelEditor(string connectionString)
 
             await using var command = new SqlCommand("""
                 SELECT v.FieldKey, v.ValueJson
-                FROM dbo.ProductCustomValues AS v
+                FROM (
+                    SELECT FieldKey, ValueJson FROM dbo.ProductCustomValues WHERE ProductId = @id
+                    UNION ALL
+                    SELECT FieldKey, CONCAT('"', LOWER(CONVERT(char(36), RecordId)), '"')
+                    FROM dbo.ProductReferenceValues WHERE ProductId = @id
+                ) AS v
                 INNER JOIN dbo.ProductCustomFields AS f ON f.FieldKey = v.FieldKey
-                WHERE v.ProductId = @id
-                    AND f.FormPosition IS NOT NULL AND (@isAdmin = 1 OR f.ManagerCanUse = 1);
+                WHERE f.FormPosition IS NOT NULL AND (@isAdmin = 1 OR f.ManagerCanUse = 1);
                 """, connection, transaction);
             AddProductId(command, id);
             command.Parameters.Add("@isAdmin", SqlDbType.Bit).Value = role == RetailRole.Admin;
@@ -181,24 +208,14 @@ internal sealed class ProductModelEditor(string connectionString)
 
         return ExecuteAsync(true, async (connection, transaction) =>
         {
-            if (!IsValidKey(key))
-            {
-                throw RetailException.Missing("Custom field was not found.");
-            }
-
-            await using var lookup = new SqlCommand("""
-                SELECT FieldType FROM dbo.ProductCustomFields
-                WHERE FieldKey = @key AND FormPosition IS NOT NULL AND (@isAdmin = 1 OR ManagerCanUse = 1);
-                """, connection, transaction);
-            AddKey(lookup, key);
-            lookup.Parameters.Add("@isAdmin", SqlDbType.Bit).Value = role == RetailRole.Admin;
-            if (await lookup.ExecuteScalarAsync(token) is not string type)
-            {
-                throw role == RetailRole.Manager ? Forbidden() : RetailException.Missing("Placed custom field was not found.");
-            }
-
-            var json = ValidateValue(type, value);
+            var field = await GetUsableFieldAsync(connection, transaction, role, key, token);
             await RequireProductAsync(connection, transaction, id, token);
+            if (field.TargetModelKey is string target)
+            {
+                return await SetReferenceAsync(connection, transaction, id, key, target, value, token);
+            }
+
+            var json = ValidateValue(field.Type, value);
             await using var command = new SqlCommand("""
                 IF @json IS NULL
                     DELETE FROM dbo.ProductCustomValues WHERE ProductId = @id AND FieldKey = @key;
@@ -214,6 +231,90 @@ internal sealed class ProductModelEditor(string connectionString)
             command.Parameters.Add("@json", SqlDbType.NVarChar, -1).Value = (object?)json ?? DBNull.Value;
             return await command.ExecuteNonQueryAsync(token);
         }, token);
+    }
+
+    public Task<IReadOnlyList<ProductFieldOption>> GetOptionsAsync(RetailRole role, string key, CancellationToken token)
+    {
+        RequireEditorRole(role);
+        return ExecuteAsync<IReadOnlyList<ProductFieldOption>>(false, async (connection, transaction) =>
+        {
+            var field = await GetUsableFieldAsync(connection, transaction, role, key, token);
+            if (field.TargetModelKey is null)
+            {
+                throw RetailException.Invalid("This field is not a reference.");
+            }
+
+            await using var command = new SqlCommand("""
+                SELECT Id, Name FROM dbo.CustomModelRecords
+                WHERE ModelKey = @target ORDER BY Name, Id;
+                """, connection, transaction);
+            command.Parameters.Add("@target", SqlDbType.VarChar, 64).Value = field.TargetModelKey;
+            var options = new List<ProductFieldOption>();
+            await using var reader = await command.ExecuteReaderAsync(token);
+            while (await reader.ReadAsync(token))
+            {
+                options.Add(new ProductFieldOption(reader.GetGuid(0), reader.GetString(1)));
+            }
+            return options;
+        }, token);
+    }
+
+    private static async Task<(string Type, string? TargetModelKey)> GetUsableFieldAsync(SqlConnection connection,
+        SqlTransaction transaction, RetailRole role, string key, CancellationToken token)
+    {
+        if (IsValidKey(key))
+        {
+            await using var command = new SqlCommand("""
+                SELECT FieldType, TargetModelKey FROM dbo.ProductCustomFields
+                WHERE FieldKey = @key AND FormPosition IS NOT NULL AND (@isAdmin = 1 OR ManagerCanUse = 1);
+                """, connection, transaction);
+            AddKey(command, key);
+            command.Parameters.Add("@isAdmin", SqlDbType.Bit).Value = role == RetailRole.Admin;
+            await using var reader = await command.ExecuteReaderAsync(token);
+            if (await reader.ReadAsync(token))
+            {
+                return (reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+            }
+        }
+
+        throw role == RetailRole.Manager ? Forbidden() : RetailException.Missing("Placed custom field was not found.");
+    }
+
+    private static async Task<int> SetReferenceAsync(SqlConnection connection, SqlTransaction transaction,
+        Guid productId, string key, string target, JsonElement value, CancellationToken token)
+    {
+        Guid? recordId = null;
+        if (value.ValueKind != JsonValueKind.Null)
+        {
+            if (value.ValueKind != JsonValueKind.String || !value.TryGetGuid(out var selected))
+            {
+                throw RetailException.Invalid("Select a valid record ID or null to clear.");
+            }
+            recordId = selected;
+        }
+
+        await using var command = new SqlCommand("""
+            IF @record IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM dbo.CustomModelRecords WITH (HOLDLOCK) WHERE ModelKey = @target AND Id = @record
+            ) SELECT 0;
+            ELSE
+            BEGIN
+                DELETE FROM dbo.ProductReferenceValues WHERE ProductId = @id AND FieldKey = @key;
+                IF @record IS NOT NULL
+                    INSERT INTO dbo.ProductReferenceValues(ProductId, FieldKey, ModelKey, RecordId)
+                    VALUES (@id, @key, @target, @record);
+                SELECT 1;
+            END;
+            """, connection, transaction);
+        AddKey(command, key);
+        AddProductId(command, productId);
+        command.Parameters.Add("@target", SqlDbType.VarChar, 64).Value = target;
+        command.Parameters.Add("@record", SqlDbType.UniqueIdentifier).Value = (object?)recordId ?? DBNull.Value;
+        if (await command.ExecuteScalarAsync(token) is not 1)
+        {
+            throw RetailException.Invalid("Select an existing record from the target model.");
+        }
+        return 1;
     }
 
     private async Task<T> ExecuteAsync<T>(bool write, Func<SqlConnection, SqlTransaction, Task<T>> execute, CancellationToken token)
@@ -247,7 +348,7 @@ internal sealed class ProductModelEditor(string connectionString)
         SqlTransaction transaction, RetailRole? runtimeRole, CancellationToken token)
     {
         await using var command = new SqlCommand("""
-            SELECT FieldKey, Label, FieldType, FormPosition, ManagerCanUse
+            SELECT FieldKey, Label, FieldType, FormPosition, ManagerCanUse, TargetModelKey
             FROM dbo.ProductCustomFields
             WHERE @editor = 1 OR (FormPosition IS NOT NULL AND (@isAdmin = 1 OR ManagerCanUse = 1))
             ORDER BY CASE WHEN FormPosition IS NULL THEN 1 ELSE 0 END, FormPosition, FieldKey;
@@ -260,7 +361,7 @@ internal sealed class ProductModelEditor(string connectionString)
         while (await reader.ReadAsync(token))
         {
             fields.Add(new ProductCustomField(reader.GetString(0), reader.GetString(1), reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetInt32(3), reader.GetBoolean(4)));
+                reader.IsDBNull(3) ? null : reader.GetInt32(3), reader.GetBoolean(4), reader.IsDBNull(5) ? null : reader.GetString(5)));
         }
 
         return fields;

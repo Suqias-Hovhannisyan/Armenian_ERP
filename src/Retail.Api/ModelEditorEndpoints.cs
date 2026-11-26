@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace Retail.Api;
 
-internal sealed record CreateFieldRequest(string? Key, string? Label, string? Type);
+internal sealed record CreateFieldRequest(string? Key, string? Label, string? Type, string? TargetModelKey);
 internal sealed record PlaceFieldRequest([property: JsonRequired] int? Position);
 internal sealed record ManagerEditorRequest(bool? CanEdit);
 internal sealed record ManagerFieldRequest(bool? CanUse);
@@ -45,6 +45,9 @@ internal static class ModelEditorEndpoints
 
         products.MapGet("/form", async (HttpContext context, ProductModelEditor editor, CancellationToken token) =>
             Results.Ok(await editor.GetFormAsync(Role(context), token)));
+
+        products.MapGet("/form/{key}/options", async (string key, HttpContext context, ProductModelEditor editor, CancellationToken token) =>
+            Results.Ok(await editor.GetOptionsAsync(Role(context), key, token)));
 
         products.MapGet("/{id:guid}/custom-fields", async (Guid id, HttpContext context, ProductModelEditor editor, CancellationToken token) =>
             Results.Ok(await editor.GetValuesAsync(Role(context), id, token)));

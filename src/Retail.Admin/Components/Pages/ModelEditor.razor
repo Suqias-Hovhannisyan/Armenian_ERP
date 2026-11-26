@@ -34,6 +34,53 @@
     }
     else
     {
+        @if (editor.CanGrant)
+        {
+            <section class="card catalog-models">
+                <h2>Օգտատիրոջ մոդելներ</h2>
+                <form class="editor-create" @onsubmit="CreateModelAsync" @onsubmit:preventDefault>
+                    <div>
+                        <label for="model-key">Մոդելի կոդ</label>
+                        <input id="model-key" @bind="modelKey" pattern="[a-z][a-z0-9_]{0,63}" maxlength="64" placeholder="brand" required disabled="@busy" />
+                    </div>
+                    <div>
+                        <label for="model-label">Մոդելի անվանում</label>
+                        <input id="model-label" @bind="modelLabel" maxlength="200" placeholder="Ապրանքանիշ" required disabled="@busy" />
+                    </div>
+                    <button id="create-model" disabled="@busy">Ստեղծել մոդել</button>
+                </form>
+                @if (catalogModels.Length > 0)
+                {
+                    <label for="catalog-model">Մոդելի գրառումներ</label>
+                    <select id="catalog-model" value="@catalogModelKey" @onchange="SelectCatalogAsync" disabled="@busy">
+                        <option value="">Ընտրիր մոդելը</option>
+                        @foreach (var model in catalogModels)
+                        {
+                            <option value="@model.Key">@model.Label (@model.Key)</option>
+                        }
+                    </select>
+                    @if (catalogModelKey.Length > 0)
+                    {
+                        <form class="inline-form" @onsubmit="CreateRecordAsync" @onsubmit:preventDefault>
+                            <div>
+                                <label for="record-name">Գրառման անվանում</label>
+                                <input id="record-name" @bind="recordName" maxlength="200" required disabled="@busy" />
+                            </div>
+                            <button id="create-record" disabled="@busy">Ավելացնել գրառում</button>
+                        </form>
+                        @if (catalogRecords.Length > 0)
+                        {
+                            <ul>
+                                @foreach (var record in catalogRecords)
+                                {
+                                    <li @key="record.Id">@record.Name</li>
+                                }
+                            </ul>
+                        }
+                    }
+                }
+            </section>
+        }
         <section class="card">
             <div class="heading">
                 <h2>Ապրանքի մոդել</h2>
@@ -66,8 +113,25 @@
                             <option value="text">Տեքստ</option>
                             <option value="integer">Ամբողջ թիվ</option>
                             <option value="boolean">Այո կամ ոչ</option>
+                            @if (editor.CanGrant && catalogModels.Length > 0)
+                            {
+                                <option value="reference">Կապ մոդելի հետ</option>
+                            }
                         </select>
                     </div>
+                    @if (fieldType == "reference")
+                    {
+                        <div>
+                            <label for="field-target-model">Կապակցված մոդել</label>
+                            <select id="field-target-model" @bind="targetModelKey" disabled="@busy" required>
+                                <option value="">Ընտրիր մոդելը</option>
+                                @foreach (var model in catalogModels)
+                                {
+                                    <option value="@model.Key">@model.Label (@model.Key)</option>
+                                }
+                            </select>
+                        </div>
+                    }
                     <button disabled="@busy">Ստեղծել դաշտը</button>
                 </form>
             }
@@ -163,7 +227,17 @@
                 {
                     <form class="field-value-form" @key="(product.Id, field.Key)" @onsubmit="() => SaveValueAsync(product.Id, field)" @onsubmit:preventDefault>
                         <label for="@($"value-{field.Key}")">@field.Label</label>
-                        @if (field.Type == "boolean")
+                        @if (field.Type == "reference")
+                        {
+                            <select id="@($"value-{field.Key}")" @bind="values[field.Key]" disabled="@busy">
+                                <option value="">Չսահմանված</option>
+                                @foreach (var option in referenceOptions[field.Key])
+                                {
+                                    <option value="@option.Id">@option.Name</option>
+                                }
+                            </select>
+                        }
+                        else if (field.Type == "boolean")
                         {
                             <select id="@($"value-{field.Key}")" @bind="values[field.Key]" disabled="@busy">
                                 <option value="">Չսահմանված</option>
@@ -217,6 +291,10 @@
         var state = await client.GetFromJsonAsync<EditorState>("/api/model-editor/products")
             ?? throw new System.Text.Json.JsonException("Editor state was empty.");
         products = await client.GetFromJsonAsync<Product[]>("/api/products") ?? [];
+        if (state.CanGrant)
+        {
+            await ReloadCatalogAsync(client);
+        }
         activeToken = token;
         ApplyEditorState(state);
         if (ProductId is Guid id && products.Any(product => product.Id == id))
@@ -231,6 +309,7 @@
         activeToken = "";
         enteredToken = "";
         editor = null;
+        ResetCatalog();
         selectedProduct = "";
         products = [];
         positions.Clear();
@@ -253,6 +332,10 @@
     {
         using var client = CreateClient(activeToken);
         products = await client.GetFromJsonAsync<Product[]>("/api/products") ?? [];
+        if (editor?.CanGrant == true)
+        {
+            await ReloadCatalogAsync(client);
+        }
         await ReloadEditorAsync();
     });
 
@@ -283,7 +366,8 @@
     {
         using var client = CreateClient(activeToken);
         using var response = await client.PostAsJsonAsync("/api/model-editor/products/fields",
-            new { key = fieldKey.Trim(), label = fieldLabel.Trim(), type = fieldType });
+            new { key = fieldKey.Trim(), label = fieldLabel.Trim(), type = fieldType,
+                targetModelKey = fieldType == "reference" ? targetModelKey : null });
         response.EnsureSuccessStatusCode();
 
         fieldKey = "";
@@ -344,6 +428,11 @@
             $"/api/products/{id}/custom-fields") ?? [];
         foreach (var field in fields)
         {
+            if (field.Type == "reference")
+            {
+                referenceOptions[field.Key] = await client.GetFromJsonAsync<CatalogRecord[]>(
+                    $"/api/products/form/{field.Key}/options") ?? [];
+            }
             values.Add(field.Key, FormatValue(storedValues.GetValueOrDefault(field.Key)));
         }
 
@@ -356,6 +445,7 @@
         loadedProduct = null;
         formFields = [];
         values.Clear();
+        referenceOptions.Clear();
     }
 
     private Task SaveValueAsync(Guid id, Field field) => RunAsync(async () =>
@@ -418,8 +508,8 @@
                 System.Net.HttpStatusCode.Unauthorized => "Մուտքի բանալին չի ընդունվել։",
                 System.Net.HttpStatusCode.Forbidden => "Այս գործողության իրավունքը չունես։",
                 System.Net.HttpStatusCode.BadRequest => "Ստուգիր մուտքագրված տվյալները։",
-                System.Net.HttpStatusCode.NotFound => "Դաշտը կամ ապրանքը չի գտնվել։",
-                System.Net.HttpStatusCode.Conflict => "Նույն կոդով դաշտն արդեն գոյություն ունի։",
+                System.Net.HttpStatusCode.NotFound => "Ընտրված տարրը չի գտնվել։",
+                System.Net.HttpStatusCode.Conflict => "Տվյալ կոդը կամ անվանումն արդեն օգտագործվում է։",
                 _ => "Սերվերից հաստատում չի ստացվել։ Կրկին փորձիր։"
             };
         }
@@ -450,6 +540,7 @@
         "text" => "Տեքստ",
         "integer" => "Ամբողջ թիվ",
         "boolean" => "Այո կամ ոչ",
+        "reference" => "Կապ մոդելի հետ",
         _ => type
     };
 
