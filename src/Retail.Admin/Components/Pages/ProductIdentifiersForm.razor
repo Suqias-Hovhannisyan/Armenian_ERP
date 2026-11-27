@@ -1,0 +1,83 @@
+@inject IHttpClientFactory ClientFactory
+
+@if (problem is not null)
+{
+    <p class="notice error" role="alert">@problem</p>
+}
+@if (profile is not null)
+{
+    <form class="identifier-form" @onsubmit="SaveAsync" @onsubmit:preventDefault>
+        <fieldset disabled="@saving">
+            <legend>Ապրանքի նույնացուցիչներ</legend>
+            <label for="product-barcode">Վաճառքի շտրիխկոդ</label>
+            <input id="product-barcode" @bind="profile.Barcode" />
+            <label for="product-gtin">GTIN</label>
+            <input id="product-gtin" inputmode="numeric" maxlength="14" @bind="profile.Gtin" />
+            <label for="product-atg">ԱՏԳ ԱԱ ծածկագիր (10 նիշ)</label>
+            <input id="product-atg" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" @bind="profile.AtgCode" />
+            <label class="marking-toggle"><input id="product-requires-marking" type="checkbox" @bind="profile.RequiresMarking" /> Պահանջել յուրաքանչյուր միավորի Data Matrix</label>
+            <button id="save-identifiers">Պահպանել նույնացուցիչները</button>
+        </fieldset>
+    </form>
+    @if (saved)
+    {
+        <p class="notice success" role="status">Նույնացուցիչները պահպանվել են։</p>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid ProductId { get; set; }
+    [Parameter, EditorRequired] public string Token { get; set; } = "";
+    private Profile? profile;
+    private string? problem;
+    private bool saving;
+    private bool saved;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            using var client = ClientFactory.CreateClient("RetailApi");
+            profile = await client.GetFromJsonAsync<Profile>($"/api/products/{ProductId}/identifiers");
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            problem = "Ապրանքի նույնացուցիչները չբեռնվեցին։ Ստուգիր API-ն և տվյալների բազայի միգրացիաները։";
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (saving || profile is null)
+            return;
+        saving = true;
+        saved = false;
+        problem = null;
+        try
+        {
+            using var client = ClientFactory.CreateClient("RetailApi");
+            client.DefaultRequestHeaders.Authorization = new("Bearer", Token);
+            using var response = await client.PutAsJsonAsync($"/api/products/{ProductId}/identifiers", profile);
+            if (response.IsSuccessStatusCode)
+                saved = true;
+            else
+                problem = await RetailApiErrors.DetailAsync(response) ?? "Նույնացուցիչները չպահպանվեցին։ Ստուգիր տվյալներն ու իրավունքը։";
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            problem = "Պահպանման հաստատում չի ստացվել։ Թարմացրու էջը և ստուգիր արժեքները։";
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private sealed class Profile
+    {
+        public string? Barcode { get; set; }
+        public string? Gtin { get; set; }
+        public string? AtgCode { get; set; }
+        public bool RequiresMarking { get; set; }
+    }
+}

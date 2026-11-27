@@ -1,8 +1,8 @@
 namespace Retail.Api;
 
 public sealed record CreateProductRequest(Guid RequestId, string? Sku, string? Name, long UnitPriceAmd);
-public sealed record StockRequest(Guid RequestId, Guid ProductId, decimal Quantity);
-public sealed record ReturnRequest(Guid RequestId, decimal Quantity);
+public sealed record StockRequest(Guid RequestId, Guid ProductId, decimal Quantity, string[]? MarkingCodes = null);
+public sealed record ReturnRequest(Guid RequestId, decimal Quantity, string[]? MarkingCodes = null);
 public sealed record Product(Guid Id, string Sku, string Name, long UnitPriceAmd, decimal Stock);
 public sealed record ProductStock(Guid ProductId, decimal Quantity);
 public sealed record StockMovement(Guid Id, Guid ProductId, decimal Quantity, decimal Stock);

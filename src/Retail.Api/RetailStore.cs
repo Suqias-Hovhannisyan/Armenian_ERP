@@ -77,8 +77,9 @@ internal sealed class RetailStore(string connectionString)
     public Task<string> ReceiveAsync(StockRequest request, CancellationToken token)
     {
         ValidateQuantity(request.Quantity);
+        var codes = MarkingLedger.Parse(request.MarkingCodes);
         return ExecuteWriteAsync(request.RequestId,
-            new { Operation = "receipt", request.ProductId, Quantity = FormatQuantity(request.Quantity) },
+            MarkingLedger.Fingerprint(new { Operation = "receipt", request.ProductId, Quantity = FormatQuantity(request.Quantity) }, codes),
             async (connection, transaction) =>
             {
                 var product = await GetProductAsync(connection, transaction, request.ProductId, token);
@@ -86,6 +87,7 @@ internal sealed class RetailStore(string connectionString)
                 await SetStockAsync(connection, transaction, movement.ProductId, movement.Stock, token);
                 await AddMovementAsync(connection, transaction, movement.Id, product.Id, null, "receipt",
                     request.Quantity, null, null, token);
+                await MarkingLedger.ApplyAsync(connection, transaction, product.Id, movement.Id, null, "receipt", request.Quantity, codes, token);
                 return movement;
             }, token);
     }
@@ -93,8 +95,9 @@ internal sealed class RetailStore(string connectionString)
     public Task<string> SellAsync(StockRequest request, CancellationToken token)
     {
         ValidateQuantity(request.Quantity);
+        var codes = MarkingLedger.Parse(request.MarkingCodes);
         return ExecuteWriteAsync(request.RequestId,
-            new { Operation = "sale", request.ProductId, Quantity = FormatQuantity(request.Quantity) },
+            MarkingLedger.Fingerprint(new { Operation = "sale", request.ProductId, Quantity = FormatQuantity(request.Quantity) }, codes),
             async (connection, transaction) =>
             {
                 var product = await GetProductAsync(connection, transaction, request.ProductId, token);
@@ -119,6 +122,7 @@ internal sealed class RetailStore(string connectionString)
                 await SetStockAsync(connection, transaction, product.Id, movement.Stock, token);
                 await AddMovementAsync(connection, transaction, movement.Id, product.Id, id, "sale",
                     -request.Quantity, movement.UnitPriceAmd, movement.TotalAmd, token);
+                await MarkingLedger.ApplyAsync(connection, transaction, product.Id, movement.Id, id, "sale", request.Quantity, codes, token);
                 return movement;
             }, token);
     }
@@ -126,8 +130,9 @@ internal sealed class RetailStore(string connectionString)
     public Task<string> ReturnAsync(Guid saleId, ReturnRequest request, CancellationToken token)
     {
         ValidateQuantity(request.Quantity);
+        var codes = MarkingLedger.Parse(request.MarkingCodes);
         return ExecuteWriteAsync(request.RequestId,
-            new { Operation = "return", SaleId = saleId, Quantity = FormatQuantity(request.Quantity) },
+            MarkingLedger.Fingerprint(new { Operation = "return", SaleId = saleId, Quantity = FormatQuantity(request.Quantity) }, codes),
             async (connection, transaction) =>
             {
                 var sale = await GetSaleAsync(connection, transaction, saleId, token);
@@ -151,6 +156,7 @@ internal sealed class RetailStore(string connectionString)
                 await SetStockAsync(connection, transaction, product.Id, movement.Stock, token);
                 await AddMovementAsync(connection, transaction, movement.Id, product.Id, saleId, "return",
                     request.Quantity, movement.UnitPriceAmd, movement.TotalAmd, token);
+                await MarkingLedger.ApplyAsync(connection, transaction, product.Id, movement.Id, saleId, "return", request.Quantity, codes, token);
                 return movement;
             }, token);
     }
