@@ -59,14 +59,19 @@
         </section>
         <section class="card">
             <h2>Մուտք կամ վաճառք</h2>
+            <form @onsubmit="FindBarcodeAsync" @onsubmit:preventDefault>
+                <label for="scan-barcode">Ապրանքի շտրիխկոդ</label>
+                <input id="scan-barcode" @bind="scanBarcode" required autocomplete="off" disabled="@busy" />
+                <button id="lookup-barcode" class="secondary" disabled="@busy">Գտնել ապրանքը</button>
+            </form>
             <form @onsubmit="PostMovementAsync" @onsubmit:preventDefault>
                 <label for="movement">Գործողություն</label>
-                <select id="movement" @bind="movement">
+                <select id="movement" @bind="movement" @bind:after="ClearMovementScans" disabled="@busy">
                     <option value="receipt">Ապրանքի մուտք</option>
                     <option value="sale">Վաճառք</option>
                 </select>
                 <label for="product">Ապրանք</label>
-                <select id="product" @bind="selectedProduct" required>
+                <select id="product" @bind="selectedProduct" @bind:after="ProductChangedAsync" required disabled="@busy">
                     <option value="">Ընտրիր ապրանքը</option>
                     @foreach (var product in products ?? [])
                     {
@@ -75,6 +80,12 @@
                 </select>
                 <label for="quantity">Քանակ</label>
                 <input id="quantity" type="number" step="0.001" min="0.001" @bind="quantity" required />
+                @if (requiresMarking)
+                {
+                    <label for="movement-codes">Միավորների Data Matrix կոդեր</label>
+                    <small>Սկանավորիր կամ տեղադրիր յուրաքանչյուր միավորի կոդը առանձին տողում։</small>
+                    <textarea id="movement-codes" class="marking-scans" rows="4" @bind="movementCodes" required spellcheck="false" disabled="@busy"></textarea>
+                }
                 <button disabled="@(busy || products is not { Length: > 0 })">Գրանցել</button>
             </form>
         </section>
@@ -82,9 +93,12 @@
             <h2>Վերադարձ</h2>
             <form @onsubmit="PostReturnAsync" @onsubmit:preventDefault>
                 <label for="sale-id">Վաճառքի ID</label>
-                <input id="sale-id" @bind="saleId" required />
+                <input id="sale-id" @bind="saleId" @bind:after="ClearReturnScans" required />
                 <label for="return-quantity">Վերադարձի քանակ</label>
                 <input id="return-quantity" type="number" step="0.001" min="0.001" @bind="returnQuantity" required />
+                <label for="return-codes">Վերադարձվող միավորների Data Matrix կոդեր</label>
+                <small>Դրոշմավորված ապրանքի համար սկանավորիր կոդերը՝ յուրաքանչյուրն առանձին տողում։</small>
+                <textarea id="return-codes" class="marking-scans" rows="3" @bind="returnCodes" spellcheck="false" disabled="@busy"></textarea>
                 <button disabled="@busy">Գրանցել վերադարձը</button>
             </form>
         </section>
@@ -104,6 +118,10 @@
     private decimal quantity = 1;
     private string saleId = "";
     private decimal returnQuantity = 1;
+    private string scanBarcode = "";
+    private bool requiresMarking;
+    private string movementCodes = "";
+    private string returnCodes = "";
     private readonly Dictionary<object, Guid> pendingRequests = new();
 
     protected override Task OnInitializedAsync() => RefreshAsync();
@@ -128,6 +146,51 @@
         await RefreshAfterPostingAsync();
     });
 
+    private Task ProductChangedAsync() => RunAsync(LoadMarkingSettingAsync);
+
+    private async Task LoadMarkingSettingAsync()
+    {
+        requiresMarking = false;
+        ClearMovementScans();
+        if (!Guid.TryParse(selectedProduct, out var id))
+            return;
+        try
+        {
+            using var client = ClientFactory.CreateClient("RetailApi");
+            var profile = await client.GetFromJsonAsync<MarkingSetting>($"/api/products/{id}/identifiers");
+            requiresMarking = profile?.RequiresMarking ?? throw new System.Text.Json.JsonException();
+        }
+        catch
+        {
+            selectedProduct = "";
+            throw;
+        }
+    }
+
+    private Task FindBarcodeAsync() => RunAsync(async () =>
+    {
+        selectedProduct = "";
+        ClearMovementScans();
+        requiresMarking = false;
+        using var client = ClientFactory.CreateClient("RetailApi");
+        var code = Uri.EscapeDataString(scanBarcode.Trim());
+        var product = await client.GetFromJsonAsync<Product>($"/api/products/by-barcode/{code}");
+        if (product is null)
+            throw new System.Text.Json.JsonException();
+        if (products?.Any(item => item.Id == product.Id) != true)
+            await LoadProductsAsync();
+        selectedProduct = product.Id.ToString();
+        await LoadMarkingSettingAsync();
+        scanBarcode = "";
+        message = $"Ընտրվել է «{product.Name}» ապրանքը։";
+    });
+
+    private void ClearMovementScans() => movementCodes = "";
+    private void ClearReturnScans() => returnCodes = "";
+
+    private static string[] ParseScans(string input) =>
+        input.ReplaceLineEndings("\n").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
     private Task PostMovementAsync() => RunAsync(async () =>
     {
         if (!Guid.TryParse(selectedProduct, out var productId))
@@ -138,12 +201,15 @@
 
         var isSale = movement == "sale";
         var path = isSale ? "/api/sales" : "/api/receipts";
-        var payload = new { path, productId, quantity };
+        var markingCodes = ParseScans(movementCodes);
+        var payload = new { path, productId, quantity, movementCodes };
         var result = await PostAsync<Operation>(path, payload, requestId =>
-            new { requestId, productId, payload.quantity });
+            new { requestId, productId, payload.quantity, markingCodes });
+        ClearMovementScans();
         if (isSale)
         {
             saleId = result.Id.ToString();
+            ClearReturnScans();
             message = $"Վաճառքը գրանցվել է։ Գումարը՝ {result.TotalAmd} ֏։ ID՝ {result.Id}";
         }
         else
@@ -161,9 +227,11 @@
             return;
         }
 
-        var payload = new { saleId = id, quantity = returnQuantity };
+        var markingCodes = ParseScans(returnCodes);
+        var payload = new { saleId = id, quantity = returnQuantity, returnCodes };
         var result = await PostAsync<Operation>($"/api/sales/{id}/returns", payload, requestId =>
-            new { requestId, payload.quantity });
+            new { requestId, payload.quantity, markingCodes });
+        ClearReturnScans();
         message = $"Վերադարձը գրանցվել է։ Գումարը՝ {result.TotalAmd} ֏։";
         await RefreshAfterPostingAsync();
     });
@@ -196,6 +264,9 @@
             {
                 pendingRequests.Remove(payload);
             }
+            var detail = await RetailApiErrors.DetailAsync(response);
+            if (detail is not null)
+                throw new RetailValidationException(detail);
             throw new HttpRequestException(null, null, response.StatusCode);
         }
         var result = await response.Content.ReadFromJsonAsync<T>();
@@ -221,6 +292,10 @@
         {
             await action();
         }
+        catch (RetailValidationException ex)
+        {
+            error = ex.Message;
+        }
         catch (HttpRequestException ex)
         {
             error = ex.StatusCode switch
@@ -245,6 +320,8 @@
         }
     }
 
+    private sealed record MarkingSetting(bool RequiresMarking);
+    private sealed class RetailValidationException(string message) : Exception(message);
     private sealed record Product(Guid Id, string Sku, string Name, decimal UnitPriceAmd, decimal Stock);
     private sealed record Operation(Guid Id, Guid ProductId, decimal Quantity, decimal Stock, decimal? TotalAmd);
 }

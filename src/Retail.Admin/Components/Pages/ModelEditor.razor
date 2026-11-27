@@ -219,6 +219,10 @@
                     <div><dt>Միավորի գին</dt><dd>@product.UnitPriceAmd ֏</dd></div>
                     <div><dt>Մնացորդ</dt><dd>@product.Stock.ToString("0.###")</dd></div>
                 </dl>
+                @if (editor.CanGrant)
+                {
+                    <ProductIdentifiersForm @key="product.Id" ProductId="product.Id" Token="@activeToken" />
+                }
                 @if (formFields.Length == 0)
                 {
                     <p>Այս ձևում հասանելի լրացուցիչ դաշտեր չկան։</p>

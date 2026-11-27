@@ -46,5 +46,6 @@ app.MapPost("/api/sales/{id:guid}/returns", async (Guid id, ReturnRequest reques
 
 app.MapModelEditor();
 CatalogModels.MapEndpoints(app, connectionString);
+ProductIdentifiers.MapEndpoints(app, connectionString);
 
 app.Run();
