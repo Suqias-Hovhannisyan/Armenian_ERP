@@ -25,9 +25,12 @@
     }
 }
 
+@inject EditorSessions Sessions
+@inject NavigationManager Navigation
+
 @code {
     [Parameter, EditorRequired] public Guid ProductId { get; set; }
-    [Parameter, EditorRequired] public string Token { get; set; } = "";
+    [Parameter, EditorRequired] public string SessionId { get; set; } = "";
     private Profile? profile;
     private string? problem;
     private bool saving;
@@ -55,13 +58,19 @@
         problem = null;
         try
         {
-            using var client = ClientFactory.CreateClient("RetailApi");
-            client.DefaultRequestHeaders.Authorization = new("Bearer", Token);
+            using var client = Sessions.CreateClient(SessionId);
             using var response = await client.PutAsJsonAsync($"/api/products/{ProductId}/identifiers", profile);
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                throw new HttpRequestException(null, null, response.StatusCode);
             if (response.IsSuccessStatusCode)
                 saved = true;
             else
                 problem = await RetailApiErrors.DetailAsync(response) ?? "Նույնացուցիչները չպահպանվեցին։ Ստուգիր տվյալներն ու իրավունքը։";
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            Sessions.Revoke(SessionId);
+            Navigation.NavigateTo(Navigation.Uri, forceLoad: true);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {

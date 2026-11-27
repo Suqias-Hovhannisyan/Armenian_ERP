@@ -2,6 +2,9 @@ namespace Retail.Api;
 
 public sealed record CreateProductRequest(Guid RequestId, string? Sku, string? Name, long UnitPriceAmd);
 public sealed record StockRequest(Guid RequestId, Guid ProductId, decimal Quantity, string[]? MarkingCodes = null);
+public sealed record CartRequest(Guid RequestId, CartLineRequest?[]? Lines);
+public sealed record CartLineRequest(Guid ProductId, decimal Quantity, string[]? MarkingCodes = null);
+public sealed record CartReceipt(Guid Id, long TotalAmd, IReadOnlyList<SaleMovement> Lines);
 public sealed record ReturnRequest(Guid RequestId, decimal Quantity, string[]? MarkingCodes = null);
 public sealed record Product(Guid Id, string Sku, string Name, long UnitPriceAmd, decimal Stock);
 public sealed record ProductStock(Guid ProductId, decimal Quantity);

@@ -1,0 +1,59 @@
+name: POS integration
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  mixed-checkout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      sql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        ports:
+          - 127.0.0.1:1433:1433
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: 'Pos-Test-Only!1836'
+    env:
+      ConnectionStrings__Retail: 'Server=localhost,1433;Database=PosIntegration;User ID=sa;Password=Pos-Test-Only!1836;Encrypt=True;TrustServerCertificate=True'
+      RetailAccess__AdminToken: integration-admin-key-for-ephemeral-database
+      RetailAccess__ManagerToken: integration-manager-key-for-ephemeral-database
+      RetailAccess__CashierToken: integration-cashier-key-for-ephemeral-database
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build ArmeniaRetailERP.slnx --configuration Release
+      - name: Apply migrations to test database
+        env:
+          SQL_CONTAINER: ${{ job.services.sql.id }}
+        run: |
+          sql() {
+            docker exec -i -e 'SQLCMDPASSWORD=Pos-Test-Only!1836' "$SQL_CONTAINER" \
+              /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -l 3 "$@"
+          }
+          for attempt in {1..45}; do
+            if sql -Q 'SELECT 1' >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          sql -Q 'CREATE DATABASE PosIntegration'
+          for migration in src/Retail.Api/Database/*.sql; do
+            sql -d PosIntegration < "$migration"
+          done
+      - name: Verify mixed checkout and marking regression scenarios
+        run: |
+          dotnet run --project src/Retail.Api --configuration Release --no-build \
+            --no-launch-profile --urls http://127.0.0.1:5080 > "$RUNNER_TEMP/pos-api.log" 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --silent --fail http://127.0.0.1:5080/api/products >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --silent --fail http://127.0.0.1:5080/api/products >/dev/null || { cat "$RUNNER_TEMP/pos-api.log"; exit 1; }
+          python3 tests/test_pos_cart.py http://127.0.0.1:5080
+          python3 tests/test_marking.py http://127.0.0.1:5080
+          python3 tests/smoke.py http://127.0.0.1:5080

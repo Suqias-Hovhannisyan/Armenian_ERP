@@ -16,7 +16,7 @@ public partial class ModelEditor
 
     private Task CreateModelAsync() => RunAsync(async () =>
     {
-        using var client = CreateClient(activeToken);
+        using var client = Sessions.CreateClient(SessionId);
         var key = modelKey.Trim();
         using var response = await client.PostAsJsonAsync(CatalogPath, new { key, label = modelLabel.Trim() });
         response.EnsureSuccessStatusCode();
@@ -36,7 +36,7 @@ public partial class ModelEditor
     {
         catalogModelKey = args.Value?.ToString() ?? "";
         recordName = "";
-        using var client = CreateClient(activeToken);
+        using var client = Sessions.CreateClient(SessionId);
         await LoadRecordsAsync(client);
     });
 
@@ -51,7 +51,7 @@ public partial class ModelEditor
 
     private Task CreateRecordAsync() => RunAsync(async () =>
     {
-        using var client = CreateClient(activeToken);
+        using var client = Sessions.CreateClient(SessionId);
         using var response = await client.PostAsJsonAsync($"{CatalogPath}/{catalogModelKey}/records",
             new { name = recordName.Trim() });
         response.EnsureSuccessStatusCode();
@@ -63,13 +63,6 @@ public partial class ModelEditor
         }
         message = "Գրառումն ավելացվել է։";
     });
-
-    private void ResetCatalog()
-    {
-        catalogModels = [];
-        catalogRecords = [];
-        catalogModelKey = targetModelKey = modelKey = modelLabel = recordName = "";
-    }
 
     private sealed record CatalogModel(string Key, string Label);
     private sealed record CatalogRecord(Guid Id, string Name);

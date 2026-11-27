@@ -1,17 +1,7 @@
-@page "/model-editor"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
-@inject IHttpClientFactory ClientFactory
+@inject EditorSessions Sessions
+@inject NavigationManager Navigation
 
-<PageTitle>Մոդելների և ձևերի խմբագրիչ</PageTitle>
-
-<header>
-    <div class="wrap">
-        <h1>Մոդելների և ձևերի խմբագրիչ</h1>
-        <nav><a href="/">Վերադառնալ ապրանքացանկին</a></nav>
-    </div>
-</header>
-
-<main class="wrap editor">
     @if (error is not null)
     {
         <p class="notice error" role="alert">@error</p>
@@ -21,18 +11,11 @@
         <p class="notice success" role="status">@message</p>
     }
 
-    @if (editor is null)
+    @if (editor is null && error is not null)
     {
-        <section class="card">
-            <h2>Մուտք խմբագրիչ</h2>
-            <form @onsubmit="ConnectAsync" @onsubmit:preventDefault>
-                <label for="access-token">Մուտքի բանալի</label>
-                <input id="access-token" type="password" autocomplete="off" @bind="enteredToken" required disabled="@busy" />
-                <button disabled="@busy">Միանալ</button>
-            </form>
-        </section>
+        <button type="button" class="secondary" @onclick="() => Navigation.NavigateTo(Navigation.Uri, forceLoad: true)">Կրկին փորձել</button>
     }
-    else
+    @if (editor is not null)
     {
         @if (editor.CanGrant)
         {
@@ -86,7 +69,6 @@
                 <h2>Ապրանքի մոդել</h2>
                 <div class="editor-actions">
                     <button type="button" class="secondary" @onclick="RefreshAsync" disabled="@busy">Թարմացնել</button>
-                    <button type="button" class="secondary" @onclick="Disconnect" disabled="@busy">Դուրս գալ</button>
                 </div>
             </div>
             @if (editor.CanGrant)
@@ -221,7 +203,7 @@
                 </dl>
                 @if (editor.CanGrant)
                 {
-                    <ProductIdentifiersForm @key="product.Id" ProductId="product.Id" Token="@activeToken" />
+                    <ProductIdentifiersForm @key="product.Id" ProductId="product.Id" SessionId="@SessionId" />
                 }
                 @if (formFields.Length == 0)
                 {
@@ -259,10 +241,11 @@
             }
         </section>
     }
-</main>
+
 
 @code {
-    [SupplyParameterFromQuery]
+    [Parameter, EditorRequired] public string SessionId { get; set; } = "";
+    [Parameter]
     public Guid? ProductId { get; set; }
 
     private EditorState? editor;
@@ -270,8 +253,6 @@
     private Product[] products = [];
     private readonly Dictionary<string, int> positions = new();
     private readonly Dictionary<string, string> values = new();
-    private string enteredToken = "";
-    private string activeToken = "";
     private string fieldKey = "";
     private string fieldLabel = "";
     private string fieldType = "text";
@@ -281,17 +262,9 @@
     private string? error;
     private string? message;
 
-    private Task ConnectAsync() => RunAsync(async () =>
+    protected override Task OnInitializedAsync() => RunAsync(async () =>
     {
-        var token = enteredToken.Trim();
-        enteredToken = "";
-        if (token.Length == 0 || token.Any(char.IsWhiteSpace))
-        {
-            error = "Մուտքագրիր վավեր բանալի։";
-            return;
-        }
-
-        using var client = CreateClient(token);
+        using var client = Sessions.CreateClient(SessionId);
         var state = await client.GetFromJsonAsync<EditorState>("/api/model-editor/products")
             ?? throw new System.Text.Json.JsonException("Editor state was empty.");
         products = await client.GetFromJsonAsync<Product[]>("/api/products") ?? [];
@@ -299,7 +272,6 @@
         {
             await ReloadCatalogAsync(client);
         }
-        activeToken = token;
         ApplyEditorState(state);
         if (ProductId is Guid id && products.Any(product => product.Id == id))
         {
@@ -308,33 +280,9 @@
         }
     });
 
-    private void Disconnect()
-    {
-        activeToken = "";
-        enteredToken = "";
-        editor = null;
-        ResetCatalog();
-        selectedProduct = "";
-        products = [];
-        positions.Clear();
-        ResetProduct();
-        fieldKey = "";
-        fieldLabel = "";
-        fieldType = "text";
-        error = null;
-        message = null;
-    }
-
-    private HttpClient CreateClient(string token)
-    {
-        var client = ClientFactory.CreateClient("RetailApi");
-        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        return client;
-    }
-
     private Task RefreshAsync() => RunAsync(async () =>
     {
-        using var client = CreateClient(activeToken);
+        using var client = Sessions.CreateClient(SessionId);
         products = await client.GetFromJsonAsync<Product[]>("/api/products") ?? [];
         if (editor?.CanGrant == true)
         {
@@ -345,7 +293,7 @@
 
     private async Task ReloadEditorAsync()
     {
-        using var client = CreateClient(activeToken);
+        using var client = Sessions.CreateClient(SessionId);
         var state = await client.GetFromJsonAsync<EditorState>("/api/model-editor/products")
             ?? throw new System.Text.Json.JsonException("Editor state was empty.");
         ApplyEditorState(state);
@@ -368,7 +316,7 @@
 
     private Task CreateFieldAsync() => RunAsync(async () =>
     {
-        using var client = CreateClient(activeToken);
+        using var client = Sessions.CreateClient(SessionId);
         using var response = await client.PostAsJsonAsync("/api/model-editor/products/fields",
             new { key = fieldKey.Trim(), label = fieldLabel.Trim(), type = fieldType,
                 targetModelKey = fieldType == "reference" ? targetModelKey : null });
@@ -396,7 +344,7 @@
 
     private Task UpdateEditorAsync(string path, object body, string success) => RunAsync(async () =>
     {
-        using var client = CreateClient(activeToken);
+        using var client = Sessions.CreateClient(SessionId);
         using var response = await client.PutAsJsonAsync(path, body);
         response.EnsureSuccessStatusCode();
         message = success;
@@ -426,7 +374,7 @@
             return;
         }
 
-        using var client = CreateClient(activeToken);
+        using var client = Sessions.CreateClient(SessionId);
         var fields = await client.GetFromJsonAsync<Field[]>("/api/products/form") ?? [];
         var storedValues = await client.GetFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>(
             $"/api/products/{id}/custom-fields") ?? [];
@@ -474,7 +422,7 @@
             }
         }
 
-        using var client = CreateClient(activeToken);
+        using var client = Sessions.CreateClient(SessionId);
         using var response = await client.PutAsJsonAsync($"/api/products/{id}/custom-fields/{field.Key}", new { value });
         response.EnsureSuccessStatusCode();
         values[field.Key] = value is null ? "" : FormatValue(System.Text.Json.JsonSerializer.SerializeToElement(value));
@@ -499,7 +447,9 @@
         {
             if (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
-                Disconnect();
+                Sessions.Revoke(SessionId);
+                Navigation.NavigateTo(Navigation.Uri, forceLoad: true);
+                return;
             }
 
             if (ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
