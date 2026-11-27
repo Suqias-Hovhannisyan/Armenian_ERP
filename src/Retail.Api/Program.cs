@@ -41,6 +41,9 @@ app.MapPost("/api/receipts", async (StockRequest request, RetailStore store, Can
 app.MapPost("/api/sales", async (StockRequest request, RetailStore store, CancellationToken cancellationToken) =>
     Results.Content(await store.SellAsync(request, cancellationToken), "application/json", statusCode: 201));
 
+app.MapPost("/api/sales/cart", async (CartRequest request, RetailStore store, CancellationToken cancellationToken) =>
+    Results.Content(await store.CheckoutAsync(request, cancellationToken), "application/json", statusCode: 201));
+
 app.MapPost("/api/sales/{id:guid}/returns", async (Guid id, ReturnRequest request, RetailStore store, CancellationToken cancellationToken) =>
     Results.Content(await store.ReturnAsync(id, request, cancellationToken), "application/json", statusCode: 201));
 

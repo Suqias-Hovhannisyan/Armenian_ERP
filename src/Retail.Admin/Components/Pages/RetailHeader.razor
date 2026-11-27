@@ -1,0 +1,21 @@
+@inject NavigationManager Navigation
+
+<a class="skip-link" href="@(Navigation.Uri.Split('#')[0] + "#main-content")">Անցնել հիմնական բովանդակությանը</a>
+<header class="retail-header">
+    <div class="wrap retail-masthead">
+        <a class="retail-brand" href="/">ArmeniaRetailERP</a>
+        <nav class="primary-nav" aria-label="Հիմնական նավիգացիա">
+            <a href="/" aria-current="@PageState("catalog")">Ապրանքներ և պահեստ</a>
+            <a href="/pos" aria-current="@PageState("pos")">Դրամարկղ</a>
+            <a href="/model-editor" aria-current="@PageState("editor")">Մոդելների խմբագրիչ</a>
+        </nav>
+    </div>
+    <div class="wrap retail-page-title"><h1>@Title</h1></div>
+</header>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter, EditorRequired] public string CurrentPage { get; set; } = "";
+
+    private string? PageState(string page) => CurrentPage == page ? "page" : null;
+}

@@ -1,0 +1,50 @@
+@page "/model-editor"
+@using Microsoft.AspNetCore.Components.Forms
+@inject EditorSessions Sessions
+
+<PageTitle>Մոդելների և ձևերի խմբագրիչ</PageTitle>
+<RetailHeader Title="Մոդելների և ձևերի խմբագրիչ" CurrentPage="editor" />
+
+<main id="main-content" tabindex="-1" class="wrap editor">
+    @if (Sessions.Current(Context) is { } sessionId)
+    {
+        <form action="/editor-session/logout" method="post">
+            <AntiforgeryToken />
+            <button type="submit" class="secondary">Դուրս գալ</button>
+        </form>
+        <ModelEditor SessionId="@sessionId" ProductId="@ProductId" />
+    }
+    else
+    {
+        <section class="card">
+            <h2>Մուտք խմբագրիչ</h2>
+            @if (LoginError == "key")
+            {
+                <p class="notice error" role="alert">Մուտքի բանալին սխալ է։</p>
+            }
+            else if (LoginError == "api")
+            {
+                <p class="notice error" role="alert">Սերվերից հաստատում չի ստացվել։ Կրկին փորձիր։</p>
+            }
+            <form action="/editor-session/login" method="post">
+                <AntiforgeryToken />
+                @if (ProductId.HasValue)
+                {
+                    <input type="hidden" name="productId" value="@ProductId" />
+                }
+                <label for="access-token">Մուտքի բանալի</label>
+                <input id="access-token" name="accessKey" type="password" autocomplete="current-password" maxlength="512" required />
+                <small>Այս դիտարկիչում մուտքը պահպանվում է մինչև 7 օր։ Ընդհանուր սարքում ավարտելուց հետո սեղմիր «Դուրս գալ»։</small>
+                <button type="submit">Միանալ</button>
+            </form>
+        </section>
+    }
+</main>
+
+@code {
+    [CascadingParameter] private HttpContext Context { get; set; } = default!;
+    [SupplyParameterFromQuery] public Guid? ProductId { get; set; }
+    [SupplyParameterFromQuery] public string? LoginError { get; set; }
+
+    protected override void OnInitialized() => Context.Response.Headers.CacheControl = "no-store";
+}

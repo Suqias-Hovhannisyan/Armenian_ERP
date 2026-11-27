@@ -1,4 +1,5 @@
 """Run against an isolated ArmeniaRetailERP API and SQL Server test database."""
+from functools import partial
 import json
 import os
 import sys
@@ -13,20 +14,23 @@ def gtin():
     return digits + str(checksum)
 
 
+def api_request(base, method, path, body=None, expected=(200,), role=None):
+    headers = {"Content-Type": "application/json"}
+    if role:
+        headers["Authorization"] = "Bearer " + os.environ[f"RetailAccess__{role}Token"]
+    req = Request(base.rstrip("/") + path, method=method, headers=headers,
+                  data=None if body is None else json.dumps(body).encode())
+    try:
+        with urlopen(req, timeout=30) as res:
+            status, raw = res.status, res.read()
+    except HTTPError as exc:
+        status, raw = exc.code, exc.read()
+    assert status in expected, f"{method} {path}: expected {expected}, got {status}: {raw!r}"
+    return json.loads(raw) if raw else None
+
+
 def verify(base):
-    def call(method, path, body=None, expected=(200,), role=None):
-        headers = {"Content-Type": "application/json"}
-        if role:
-            headers["Authorization"] = "Bearer " + os.environ[f"RetailAccess__{role}Token"]
-        req = Request(base.rstrip("/") + path, method=method, headers=headers,
-                      data=None if body is None else json.dumps(body).encode())
-        try:
-            with urlopen(req, timeout=30) as res:
-                status, raw = res.status, res.read()
-        except HTTPError as exc:
-            status, raw = exc.code, exc.read()
-        assert status in expected, f"{method} {path}: expected {expected}, got {status}: {raw!r}"
-        return json.loads(raw) if raw else None
+    call = partial(api_request, base)
 
     def product():
         return call("POST", "/api/products", {

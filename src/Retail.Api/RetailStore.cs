@@ -98,33 +98,94 @@ internal sealed class RetailStore(string connectionString)
         var codes = MarkingLedger.Parse(request.MarkingCodes);
         return ExecuteWriteAsync(request.RequestId,
             MarkingLedger.Fingerprint(new { Operation = "sale", request.ProductId, Quantity = FormatQuantity(request.Quantity) }, codes),
-            async (connection, transaction) =>
+            (connection, transaction) => SellLineAsync(connection, transaction, request.ProductId, request.Quantity, codes, token),
+            token);
+    }
+
+    public Task<string> CheckoutAsync(CartRequest request, CancellationToken token)
+    {
+        if (request.Lines is not { Length: > 0 and <= 500 })
+            throw RetailException.Invalid("Provide between 1 and 500 cart lines.");
+
+        var products = new HashSet<Guid>();
+        var units = new HashSet<(string Gtin, string Serial)>();
+        var lines = new List<(Guid ProductId, decimal Quantity, ScannedUnit[] Codes)>();
+        foreach (var line in request.Lines)
+        {
+            if (line is null || line.ProductId == Guid.Empty || !products.Add(line.ProductId))
+                throw RetailException.Invalid("Each line must specify a distinct product.");
+            ValidateQuantity(line.Quantity);
+            var codes = MarkingLedger.Parse(line.MarkingCodes);
+            if (codes.Any(code => !units.Add((code.Gtin, code.Serial))))
+                throw RetailException.Invalid("A unit was scanned more than once in this cart.");
+            lines.Add((line.ProductId, line.Quantity, codes));
+        }
+
+        var fingerprint = new
+        {
+            Operation = "cart",
+            Lines = lines.Select(line => new
             {
-                var product = await GetProductAsync(connection, transaction, request.ProductId, token);
-                if (product.Stock < request.Quantity)
-                {
-                    throw RetailException.Conflict("Insufficient stock for this sale.");
-                }
+                line.ProductId,
+                Quantity = FormatQuantity(line.Quantity),
+                Codes = line.Codes.Select(code => code.Payload)
+            })
+        };
+        return ExecuteWriteAsync(request.RequestId, fingerprint, async (connection, transaction) =>
+        {
+            var receiptId = Guid.NewGuid();
+            await using var header = new SqlCommand(
+                "INSERT INTO dbo.PosReceipts(Id) VALUES (@receiptId);", connection, transaction);
+            AddId(header, "@receiptId", receiptId);
+            await header.ExecuteNonQueryAsync(token);
 
-                var id = Guid.NewGuid();
-                var movement = new SaleMovement(id, product.Id, request.Quantity, product.Stock - request.Quantity,
-                    product.UnitPriceAmd, CalculateTotal(request.Quantity, product.UnitPriceAmd));
-                await using var command = new SqlCommand("""
-                    INSERT INTO dbo.Sales(Id, ProductId, Quantity, ReturnedQuantity, UnitPriceAmd)
-                    VALUES (@id, @productId, @quantity, 0, @price);
-                    """, connection, transaction);
-                AddId(command, "@id", id);
-                AddId(command, "@productId", product.Id);
-                AddQuantity(command, "@quantity", request.Quantity);
-                command.Parameters.Add("@price", SqlDbType.BigInt).Value = product.UnitPriceAmd;
-                await command.ExecuteNonQueryAsync(token);
+            var movements = new List<SaleMovement>(lines.Count);
+            await using var link = new SqlCommand("""
+                INSERT INTO dbo.PosReceiptLines(ReceiptId, LineNumber, SaleId)
+                VALUES (@receiptId, @number, @saleId);
+                """, connection, transaction);
+            AddId(link, "@receiptId", receiptId);
+            var number = link.Parameters.Add("@number", SqlDbType.Int);
+            var saleId = link.Parameters.Add("@saleId", SqlDbType.UniqueIdentifier);
+            foreach (var line in lines)
+            {
+                var movement = await SellLineAsync(connection, transaction, line.ProductId, line.Quantity, line.Codes, token);
+                number.Value = movements.Count + 1;
+                saleId.Value = movement.Id;
+                await link.ExecuteNonQueryAsync(token);
+                movements.Add(movement);
+            }
+            return new CartReceipt(receiptId, movements.Sum(line => line.TotalAmd), movements);
+        }, token);
+    }
 
-                await SetStockAsync(connection, transaction, product.Id, movement.Stock, token);
-                await AddMovementAsync(connection, transaction, movement.Id, product.Id, id, "sale",
-                    -request.Quantity, movement.UnitPriceAmd, movement.TotalAmd, token);
-                await MarkingLedger.ApplyAsync(connection, transaction, product.Id, movement.Id, id, "sale", request.Quantity, codes, token);
-                return movement;
-            }, token);
+    private static async Task<SaleMovement> SellLineAsync(SqlConnection connection, SqlTransaction transaction,
+        Guid productId, decimal quantity, ScannedUnit[] codes, CancellationToken token)
+    {
+        var product = await GetProductAsync(connection, transaction, productId, token);
+        if (product.Stock < quantity)
+        {
+            throw RetailException.Conflict("Insufficient stock for this sale.");
+        }
+
+        var id = Guid.NewGuid();
+        var movement = new SaleMovement(id, product.Id, quantity, product.Stock - quantity,
+            product.UnitPriceAmd, CalculateTotal(quantity, product.UnitPriceAmd));
+        await using var command = new SqlCommand("""
+            INSERT INTO dbo.Sales(Id, ProductId, Quantity, ReturnedQuantity, UnitPriceAmd)
+            VALUES (@id, @productId, @quantity, 0, @price);
+            """, connection, transaction);
+        AddId(command, "@id", id);
+        AddId(command, "@productId", product.Id);
+        AddQuantity(command, "@quantity", quantity);
+        command.Parameters.Add("@price", SqlDbType.BigInt).Value = product.UnitPriceAmd;
+        await command.ExecuteNonQueryAsync(token);
+
+        await SetStockAsync(connection, transaction, product.Id, movement.Stock, token);
+        await AddMovementAsync(connection, transaction, movement.Id, product.Id, id, "sale",
+            -quantity, movement.UnitPriceAmd, movement.TotalAmd, token);
+        await MarkingLedger.ApplyAsync(connection, transaction, product.Id, movement.Id, id, "sale", quantity, codes, token);
+        return movement;
     }
 
     public Task<string> ReturnAsync(Guid saleId, ReturnRequest request, CancellationToken token)
