@@ -43,34 +43,27 @@ jobs:
           for migration in src/Retail.Api/Database/*.sql; do
             sql -d PosIntegration < "$migration"
           done
-      - name: Verify mixed checkout and marking regression scenarios
+      - name: Verify checkout, returns, editor sessions and role permissions
         run: |
           dotnet run --project src/Retail.Api --configuration Release --no-build \
             --no-launch-profile --urls http://127.0.0.1:5080 > "$RUNNER_TEMP/pos-api.log" 2>&1 &
           api_pid=$!
-          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+          RetailApi__BaseUrl=http://127.0.0.1:5080 dotnet run --project src/Retail.Admin \
+            --configuration Release --no-build --no-launch-profile --urls http://127.0.0.1:5081 > "$RUNNER_TEMP/pos-admin.log" 2>&1 &
+          admin_pid=$!
+          trap 'kill "$api_pid" "$admin_pid" 2>/dev/null || true' EXIT
           for attempt in {1..30}; do
             if curl --silent --fail http://127.0.0.1:5080/api/products >/dev/null; then break; fi
             sleep 1
           done
           curl --silent --fail http://127.0.0.1:5080/api/products >/dev/null || { cat "$RUNNER_TEMP/pos-api.log"; exit 1; }
-          python3 tests/test_pos_cart.py http://127.0.0.1:5080
-          python3 tests/test_marking.py http://127.0.0.1:5080
-          python3 tests/smoke.py http://127.0.0.1:5080
-      - name: Verify persistent editor login and logout
-        env:
-          RetailApi__BaseUrl: http://127.0.0.1:5080
-        run: |
-          dotnet run --project src/Retail.Api --configuration Release --no-build \
-            --no-launch-profile --urls http://127.0.0.1:5080 > "$RUNNER_TEMP/session-api.log" 2>&1 &
-          api_pid=$!
-          dotnet run --project src/Retail.Admin --configuration Release --no-build \
-            --no-launch-profile --urls http://127.0.0.1:5081 > "$RUNNER_TEMP/session-admin.log" 2>&1 &
-          admin_pid=$!
-          trap 'kill "$api_pid" "$admin_pid" 2>/dev/null || true' EXIT
           for attempt in {1..30}; do
-            if curl -fsS http://127.0.0.1:5080/api/products >/dev/null && \
-               curl -fsS http://127.0.0.1:5081/model-editor >/dev/null; then break; fi
+            if curl --silent --fail http://127.0.0.1:5081/model-editor >/dev/null; then break; fi
             sleep 1
           done
           python3 tests/test_editor_session.py http://127.0.0.1:5081
+          python3 tests/test_pos_cart.py http://127.0.0.1:5080
+          python3 tests/test_marking.py http://127.0.0.1:5080
+          python3 tests/smoke.py http://127.0.0.1:5080
+          python3 tests/model_editor.py http://127.0.0.1:5080
+          python3 tests/model_relations.py http://127.0.0.1:5080
